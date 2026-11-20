@@ -2,6 +2,8 @@ CC = gcc
 CFLAGS = -Wall -Wextra -O2 -Iinclude
 BIN_DIR = bin
 SRC = \
+		src/net.c \
+		src/event_loop.c \
 		src/main.c
 
 TARGET = $(BIN_DIR)/proxy
