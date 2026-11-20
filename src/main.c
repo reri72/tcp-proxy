@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <signal.h>
 #include <sys/socket.h>
 #include <sys/epoll.h>
 #include <netinet/in.h>
@@ -11,6 +12,36 @@
 
 #define BACKLOG     64
 #define PORT        7728
+
+static volatile sig_atomic_t running = 1;
+static void sighandle(int sig)
+{
+    (void)sig;
+    running = 0;
+}
+
+static int setup_signals(void)
+{
+    struct sigaction sa = {0};
+
+    sa.sa_handler = sighandle;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+
+    if (sigaction(SIGINT, &sa, NULL) < 0)
+    {
+        perror("sigaction (SIGINT)");
+        return -1;
+    }
+
+    if (sigaction(SIGTERM, &sa, NULL) < 0)
+    {
+        perror("sigaction (SIGTERM)");
+        return -1;
+    }
+
+    return 0;
+}
 
 int set_nonb(int fd)
 {
@@ -97,11 +128,21 @@ int set_epoll(int *epfd, int servfd)
 #define MAX_EVENTS  64
 int main(int argc, char *argv[])
 {
+    // 컴파일 경고 무시
+    (void)argc;
+    (void)argv;
+
     int server_fd = -1, epoll_fd = -1;
+
+    if (setup_signals() == -1)
+    {
+        exit(EXIT_FAILURE);
+    }
 
     if (set_socket(&server_fd) == -1)
     {
-        close(server_fd);
+        if (server_fd >= 0)
+            close(server_fd);
         exit(EXIT_FAILURE);
     }
 
@@ -112,11 +153,11 @@ int main(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
-    printf("lightweight proxy started {%d}\n", PORT);
+    printf("\033[36mlightweight proxy started {%d}\033[0m\n", PORT);
 
     struct epoll_event events[MAX_EVENTS];
-    int i = 0;
-    while (i < 5)
+    
+    while (running)
     {
         // 할 일 있나 없나 무한 대기
         int nfds = epoll_wait(epoll_fd, events, MAX_EVENTS, -1);
@@ -128,8 +169,6 @@ int main(int argc, char *argv[])
             perror("epoll_wait");
             break;
         }
-
-        i++;
 
         // 이벤트 발생 개수 순회
         for (int i = 0; i < nfds; i++)
@@ -183,6 +222,8 @@ int main(int argc, char *argv[])
 
     close(epoll_fd);
     epoll_fd = -1;
+
+    printf("\033[36mserver closed\033[0m\n");
 
     return 0;
 }
