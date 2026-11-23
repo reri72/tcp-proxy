@@ -14,6 +14,8 @@
 
 static volatile sig_atomic_t running = 1;
 
+static int peer_fds[MAX_FD];
+
 static void sighandle(int sig)
 {
     (void)sig;
@@ -67,9 +69,43 @@ int set_epoll(int *epfd, int servfd)
     return 0;
 }
 
+static int add_epoll_fd(int epfd, int fd)
+{
+    struct epoll_event ev = {0};
+    ev.events = EPOLLIN | EPOLLERR | EPOLLHUP | EPOLLET;
+    ev.data.fd = fd;
+    if (epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev) < 0)
+    {
+        perror("epoll_ctl ADD");
+        return -1;
+    }
+    return 0;
+}
+
+static void close_pair(int epfd, int fd1, int fd2)
+{
+    if (fd1 >= 0 && fd1 < MAX_FD)
+    {
+        peer_fds[fd1] = -1;
+        epoll_ctl(epfd, EPOLL_CTL_DEL, fd1, NULL);
+        close(fd1);
+    }
+
+    if (fd2 >= 0 && fd2 < MAX_FD)
+    {
+        peer_fds[fd2] = -1;
+        epoll_ctl(epfd, EPOLL_CTL_DEL, fd2, NULL);
+        close(fd2);
+    }
+}
+
 int run_event_loop(int epfd, int servfd)
 {
     struct epoll_event events[MAX_EVENTS];
+
+    // 초기화
+    for (int i = 0; i < MAX_FD; i++)
+        peer_fds[i] = -1;
 
     while (running)
     {
@@ -124,32 +160,65 @@ int run_event_loop(int epfd, int servfd)
                         break;
                     }
 
+                    if (cli_fd >= MAX_FD)
+                    {
+                        fprintf(stderr, "client (%d) exceeds MAX_FD \n", cli_fd);
+                        close(cli_fd);
+                        continue;
+                    }
+
                     if (set_nonb(cli_fd) < 0)
                     {
                          close(cli_fd);
                          continue;
                     }
 
-                    struct epoll_event ev = {0};
-                    ev.events = EPOLLIN | EPOLLERR | EPOLLHUP | EPOLLET;
-                    ev.data.fd = cli_fd;
-                    if (epoll_ctl(epfd, EPOLL_CTL_ADD, cli_fd, &ev) < 0)
+                    int backend_fd = connect_backend(TARGET_IP, TARGET_PORT);
+                    if (backend_fd < 0)
                     {
-                        perror("client epoll_ctl");
                         close(cli_fd);
                         continue;
                     }
 
+                    if (backend_fd >= MAX_FD)
+                    {
+                        fprintf(stderr, "backend (%d) exceeds MAX_FD \n", backend_fd);
+                        close(cli_fd);
+                        close(backend_fd);
+                        continue;
+                    }
+
+                    if (add_epoll_fd(epfd, cli_fd) < 0 || add_epoll_fd(epfd, backend_fd) < 0)
+                    {
+                        epoll_ctl(epfd, EPOLL_CTL_DEL, cli_fd, NULL);
+                        close(cli_fd);
+                        close(backend_fd);
+                        continue;
+                    }
+
+                    peer_fds[cli_fd] = backend_fd;
+                    peer_fds[backend_fd] = cli_fd;
+
                     char cliip[INET_ADDRSTRLEN] = {0};
                     inet_ntop(AF_INET, &cli_addr.sin_addr, cliip, sizeof(cliip));
-                    printf("client connected(fd:%d, ip: %s)\n", cli_fd, cliip);
-
-                    const char *msg = "hello!\n";
-                    write(cli_fd, msg, strlen(msg));
+                    printf("peer connected: client fd=%d (%s) <-> backend fd=%d (%s:%d)\n",
+                                        cli_fd, cliip, backend_fd, TARGET_IP, TARGET_PORT);
                 }
             }
             else
             {
+                if (fd < 0 || fd >= MAX_FD || peer_fds[fd] < 0)
+                    continue;
+
+                int target_fd = peer_fds[fd];
+
+                if (ev_flags & (EPOLLERR | EPOLLHUP))
+                {
+                    printf("socket error: fd=%d, peer=%d\n", fd, target_fd);
+                    close_pair(epfd, fd, target_fd);
+                    continue;
+                }
+
                 char buf[BUF_SIZE] = {0};
                 int closed = 0;
 
@@ -161,7 +230,7 @@ int run_event_loop(int epfd, int servfd)
                         ssize_t totlen = 0;
                         while (totlen < n)
                         {
-                            ssize_t sent = write(fd, buf + totlen, (size_t)(n - totlen));
+                            ssize_t sent = write(target_fd, buf + totlen, (size_t)(n - totlen));
                             if (sent < 0)
                             {
                                 if (errno == EINTR)
@@ -169,7 +238,7 @@ int run_event_loop(int epfd, int servfd)
                                 if (errno == EAGAIN || errno == EWOULDBLOCK)
                                 {
                                     // 송신 버퍼가 일시적으로 꽉 찬 경우
-                                    fprintf(stderr, "write block (fd:%d)\n", fd);
+                                    fprintf(stderr, "write error (target_fd:%d, from fd:%d)\n", target_fd, fd);
                                     closed = 1;
                                     break;
                                 }
@@ -188,8 +257,7 @@ int run_event_loop(int epfd, int servfd)
                     }
                     else if (n == 0)
                     {
-                        // 클라이언트가 연결 끊음
-                        printf("client disconnected (fd:%d) \n", fd);
+                        printf("connection closed: fd=%d (peer=%d)\n", fd, target_fd);
                         closed = 1;
                         break;
                     }
@@ -208,8 +276,7 @@ int run_event_loop(int epfd, int servfd)
 
                 if (closed)
                 {
-                    epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
-                    close(fd);
+                    close_pair(epfd, fd, target_fd);
                 }
             }
         }
