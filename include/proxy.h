@@ -4,5 +4,6 @@
 #define BACKLOG     64
 #define PORT        7728
 #define MAX_EVENTS  64
+#define BUF_SIZE    1024
 
 #endif

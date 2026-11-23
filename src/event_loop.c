@@ -9,6 +9,7 @@
 #include <arpa/inet.h>
 
 #include "event_loop.h"
+#include "net.h"
 #include "proxy.h"
 
 static volatile sig_atomic_t running = 1;
@@ -39,6 +40,8 @@ int setup_signals(void)
         return -1;
     }
 
+    signal(SIGPIPE, SIG_IGN);       // write 에러 방어
+
     return 0;
 }
 
@@ -53,11 +56,11 @@ int set_epoll(int *epfd, int servfd)
         return -1;
     }
 
-    ev.events = EPOLLIN | EPOLLET;  // 엣지트리거모드
+    ev.events = EPOLLIN | EPOLLERR | EPOLLHUP | EPOLLET;  // 엣지트리거모드
     ev.data.fd = servfd;
     if (epoll_ctl(*epfd, EPOLL_CTL_ADD, servfd, &ev) < 0)
     {
-        perror("epoll_ctl");
+        perror("server epoll_ctl");
         return -1;
     }
 
@@ -84,9 +87,18 @@ int run_event_loop(int epfd, int servfd)
         // 이벤트 발생 개수 순회
         for (int i = 0; i < nfds; i++)
         {
+            int fd = events[i].data.fd;
+            uint32_t ev_flags = events[i].events;
+
             // 리스닝 소켓
-            if (events[i].data.fd == servfd)
+            if (fd == servfd)
             {
+                if (ev_flags & (EPOLLERR | EPOLLHUP))
+                {
+                    fprintf(stderr, "server error (fd:%d)\n", servfd);
+                    return -1;
+                }
+
                 while (1)
                 {
                     struct sockaddr_in cli_addr;
@@ -112,18 +124,93 @@ int run_event_loop(int epfd, int servfd)
                         break;
                     }
 
+                    if (set_nonb(cli_fd) < 0)
+                    {
+                         close(cli_fd);
+                         continue;
+                    }
+
+                    struct epoll_event ev = {0};
+                    ev.events = EPOLLIN | EPOLLERR | EPOLLHUP | EPOLLET;
+                    ev.data.fd = cli_fd;
+                    if (epoll_ctl(epfd, EPOLL_CTL_ADD, cli_fd, &ev) < 0)
+                    {
+                        perror("client epoll_ctl");
+                        close(cli_fd);
+                        continue;
+                    }
+
                     char cliip[INET_ADDRSTRLEN] = {0};
                     inet_ntop(AF_INET, &cli_addr.sin_addr, cliip, sizeof(cliip));
                     printf("client connected(fd:%d, ip: %s)\n", cli_fd, cliip);
 
                     const char *msg = "hello!\n";
                     write(cli_fd, msg, strlen(msg));
-                    close(cli_fd);
                 }
             }
             else
             {
-                // 이미 연결된 소켓
+                char buf[BUF_SIZE] = {0};
+                int closed = 0;
+
+                while (1)
+                {
+                    ssize_t n = read(fd, buf, sizeof(buf));
+                    if (n > 0)
+                    {
+                        ssize_t totlen = 0;
+                        while (totlen < n)
+                        {
+                            ssize_t sent = write(fd, buf + totlen, (size_t)(n - totlen));
+                            if (sent < 0)
+                            {
+                                if (errno == EINTR)
+                                    continue;
+                                if (errno == EAGAIN || errno == EWOULDBLOCK)
+                                {
+                                    // 송신 버퍼가 일시적으로 꽉 찬 경우
+                                    fprintf(stderr, "write block (fd:%d)\n", fd);
+                                    closed = 1;
+                                    break;
+                                }
+
+                                perror("write");
+                                closed = 1;
+                                break;
+                            }
+                            totlen += sent;
+                        }
+                        
+                        if (closed)
+                            break;
+
+                        printf("relay : %.*s(%zd)\n", (int)totlen, buf, totlen);
+                    }
+                    else if (n == 0)
+                    {
+                        // 클라이언트가 연결 끊음
+                        printf("client disconnected (fd:%d) \n", fd);
+                        closed = 1;
+                        break;
+                    }
+                    else
+                    {
+                        if (errno == EAGAIN || errno == EWOULDBLOCK)
+                            break;
+                        if (errno == EINTR)
+                            continue;
+
+                        perror("read");
+                        closed = 1;
+                        break;
+                    }
+                }
+
+                if (closed)
+                {
+                    epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
+                    close(fd);
+                }
             }
         }
     }
