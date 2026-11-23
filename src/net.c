@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <unistd.h>
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -106,7 +107,7 @@ int connect_backend(const char *ip, int port)
         return -1;        
     }
 
-    if (connect(backend_fd, (struct sockaddr *)&backend_addr, sizeof(&backend_addr)) < 0)
+    if (connect(backend_fd, (struct sockaddr *)&backend_addr, sizeof(backend_addr)) < 0)
     {
         perror("connect");
         close(backend_fd);
