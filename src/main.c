@@ -61,15 +61,12 @@ int main(int argc, char *argv[])
 
     if (set_socket(&server_fd, listen_port) == -1)
     {
-        if (server_fd >= 0)
-            close(server_fd);
         exit(EXIT_FAILURE);
     }
 
     if (set_epoll(&epoll_fd, server_fd) == -1)
     {
         close(server_fd);
-        close(epoll_fd);
         exit(EXIT_FAILURE);
     }
 

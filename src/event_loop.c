@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <stdint.h>
 #include <unistd.h>
 #include <errno.h>
 #include <signal.h>
@@ -16,12 +17,22 @@ static volatile sig_atomic_t running = 1;
 
 static int peer_fds[MAX_FD];
 
+/**
+ * @brief 시그널 처리 함수
+ * 
+ * @param sig 
+ */
 static void sighandle(int sig)
 {
     (void)sig;
     running = 0;
 }
 
+/**
+ * @brief 처리 시그널 설정
+ * 
+ * @return 성공 시 0, 실패 시 -1
+ */
 int setup_signals(void)
 {
     struct sigaction sa = {0};
@@ -47,12 +58,20 @@ int setup_signals(void)
     return 0;
 }
 
+
+/**
+ * @brief epoll fd 생성 후 메인소켓 fd 를 등록
+ * 
+ * @param epfd 
+ * @param servfd 
+ * @return 성공 시 0, 실패 시 -1
+ */
 int set_epoll(int *epfd, int servfd)
 {
     struct epoll_event ev = {0};
 
-    *epfd = epoll_create1(0);
-    if (*epfd < 0)
+    int efd = epoll_create1(0);
+    if (efd < 0)
     {
         perror("epoll_create1");
         return -1;
@@ -60,15 +79,26 @@ int set_epoll(int *epfd, int servfd)
 
     ev.events = EPOLLIN | EPOLLERR | EPOLLHUP | EPOLLET;  // 엣지트리거모드
     ev.data.fd = servfd;
-    if (epoll_ctl(*epfd, EPOLL_CTL_ADD, servfd, &ev) < 0)
+    if (epoll_ctl(efd, EPOLL_CTL_ADD, servfd, &ev) < 0)
     {
         perror("server epoll_ctl");
+        close(efd);
         return -1;
     }
+
+    *epfd = efd;
 
     return 0;
 }
 
+
+/**
+ * @brief epoll 감시 대상으로 양측 fd 등록
+ * 
+ * @param epfd 
+ * @param fd 
+ * @return 성공 시 0, 실패 시 -1 
+ */
 static int add_epoll_fd(int epfd, int fd)
 {
     struct epoll_event ev = {0};
@@ -82,6 +112,13 @@ static int add_epoll_fd(int epfd, int fd)
     return 0;
 }
 
+/**
+ * @brief 양측 fd를 epoll 감시 대상에서 제거하고 연결 해제
+ * 
+ * @param epfd 
+ * @param fd1 
+ * @param fd2 
+ */
 static void close_pair(int epfd, int fd1, int fd2)
 {
     if (fd1 >= 0 && fd1 < MAX_FD)
@@ -99,6 +136,14 @@ static void close_pair(int epfd, int fd1, int fd2)
     }
 }
 
+
+/**
+ * @brief 메인 루프
+ * 
+ * @param epfd 
+ * @param servfd 
+ * @return 정상 종료 시 0, 비정상 종료 시 -1
+ */
 int run_event_loop(int epfd, int servfd)
 {
     struct epoll_event events[MAX_EVENTS];

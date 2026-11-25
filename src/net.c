@@ -38,26 +38,28 @@ int set_nonb(int fd)
  * 
  * @param empty socket fd
  * @param listen port
- * @return 성공 시 리슨 상태의 fd, 실패 시 -1
+ * @return 성공 시 0, 실패 시 -1
  */
 int set_socket(int *fd, int listen_port)
 {
-    *fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (*fd < 0)
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0)
     {
         perror("socket");
         return -1;
     }
 
     int opt = 1;
-    if (setsockopt(*fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
+    if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
     {
         perror("setsockopt");
+        close(sock);
         return -1;
     }
 
-    if (set_nonb(*fd) == -1)
+    if (set_nonb(sock) == -1)
     {
+        close(sock);
         return -1;
     }
 
@@ -67,17 +69,21 @@ int set_socket(int *fd, int listen_port)
     addr.sin_addr.s_addr = INADDR_ANY;
     addr.sin_port = htons((uint16_t)listen_port);
 
-    if (bind(*fd, (struct sockaddr *)&addr, sizeof(addr)) < 0)
+    if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0)
     {
         perror("bind");
+        close(sock);
         return -1;
     }
 
-    if (listen(*fd, BACKLOG) < 0)
+    if (listen(sock, BACKLOG) < 0)
     {
         perror("listen");
+        close(sock);
         return -1;
     }
+
+    *fd = sock;
 
     return 0;
 }
