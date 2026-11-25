@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdint.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/socket.h>
@@ -36,9 +37,10 @@ int set_nonb(int fd)
  * @brief 프록시 서버 소켓 생성 및 설정
  * 
  * @param empty socket fd
+ * @param listen port
  * @return 성공 시 리슨 상태의 fd, 실패 시 -1
  */
-int set_socket(int *fd)
+int set_socket(int *fd, int listen_port)
 {
     *fd = socket(AF_INET, SOCK_STREAM, 0);
     if (*fd < 0)
@@ -63,7 +65,7 @@ int set_socket(int *fd)
 
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port = htons(PORT);
+    addr.sin_port = htons((uint16_t)listen_port);
 
     if (bind(*fd, (struct sockaddr *)&addr, sizeof(addr)) < 0)
     {

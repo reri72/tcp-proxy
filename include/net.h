@@ -3,7 +3,7 @@
 
 int set_nonb(int fd);
 
-int set_socket(int *fd);
+int set_socket(int *fd, int listen_port);
 
 int connect_backend(const char *ip, int port);
 
